@@ -1,0 +1,119 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  This template deploys a multi-AZ MySQL database instance in the private subnet.
+
+  **WARNING** You will be billed for the AWS resources created if you create a stack from this template.
+
+  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  SPDX-License-Identifier: MIT-0
+  
+########################################################################
+
+Parameters:
+  # General
+  DBInstanceName:
+    Description: Database instance name
+    Type: String
+    Default: java-webapp-db
+  
+  # Imports
+  VPCImportName:
+    Type: String
+    Description: 'The CloudFormation name of the VPC stack to import'
+    Default: 'java-webapp-infra'
+    MinLength: '3'
+    MaxLength: '32'
+ 
+  VPCImportDBSubnet3:
+    Type: String
+    Description: 'The name of the subnet from VPC stack to import for db private subnet 3'
+    Default: 'PrivateSubnet3'
+  
+  VPCImportDBSubnet3CIDR:
+    Type: String
+    Description: 'The CIDR range from VPC stack to import for db private subnet 3'
+    Default: 'PrivateSubnet3CIDR'
+  
+  VPCImportDBSubnet4:
+    Type: String
+    Description: 'The name of the subnet from VPC stack to import for db private subnet 4'
+    Default: 'PrivateSubnet4'
+  
+  VPCImportDBSubnet4CIDR:
+    Type: String
+    Description: 'The CIDR range from VPC stack to import for db private subnet 4'
+    Default: 'PrivateSubnet4CIDR'
+
+  DBUserName:
+    Type: String
+    Description: 'MySQL database user name'
+    
+  DBUserPassword:
+    Type: String
+    Description: 'The password for the database'
+    "NoEcho": true
+
+Resources:
+  # MySQL security group
+  MySQLSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "Database instances security group"
+      VpcId:
+        Fn::ImportValue: !Sub '${VPCImportName}'
+  
+  # MySQL subnet group
+  MySQLSubnetGroup:
+    Type: "AWS::RDS::DBSubnetGroup"
+    Properties:
+      DBSubnetGroupDescription: "Subnet Group for mySQL database"
+      DBSubnetGroupName: !Sub "${AWS::Region}-aws-mysql-database-subnet-group"
+      SubnetIds:
+        - Fn::ImportValue: !Sub '${VPCImportName}-PrivateSubnet3'
+        - Fn::ImportValue: !Sub '${VPCImportName}-PrivateSubnet4'
+
+  # MySQL database instance configuration
+  RDSDBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Ref DBInstanceName
+      AllocatedStorage: 10
+      DBInstanceClass: db.t3.medium
+      Engine: "MYSQL"
+      MasterUsername: !Ref DBUserName
+      MasterUserPassword: !Ref DBUserPassword
+      BackupRetentionPeriod: 7
+      MultiAZ: true
+      EngineVersion: 8.0.23
+      AutoMinorVersionUpgrade: true
+      PubliclyAccessible: false
+      StorageType: gp2
+      Port: 3306
+      StorageEncrypted: true
+      EnableIAMDatabaseAuthentication: false
+      EnablePerformanceInsights: true
+      PerformanceInsightsRetentionPeriod: 7
+      DeletionProtection: false
+      DBSubnetGroupName: !Ref MySQLSubnetGroup
+      VPCSecurityGroups: 
+        - !Ref MySQLSecurityGroup
+
+# Export stack output parameters 
+Outputs:
+  RDSDBEndpoint:
+    Description: A reference to the RDS DB instance endpoint
+    Value: !GetAtt RDSDBInstance.Endpoint.Address
+    Export:
+      Name: !Sub '${AWS::StackName}-RDSDBEndpoint'
+
+  RDSDBPort:
+    Description: A reference to the RDS DB instance port
+    Value: !GetAtt RDSDBInstance.Endpoint.Port
+    Export:
+      Name: !Sub '${AWS::StackName}-RDSDBPort'
+
+  MySQLSecurityGroupId:
+    Description: A reference to the MySQL Security Group ID
+    Value: !GetAtt MySQLSecurityGroup.GroupId
+    Export:
+      Name: !Sub '${AWS::StackName}-MySQLSecurityGroupId'

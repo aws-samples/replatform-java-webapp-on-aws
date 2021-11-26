@@ -1,0 +1,883 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  This template deploys the solution components for the re-platformed java solution.
+  The deployed resources include a bastion host, external & internal load balancers, 
+  launch templates & autoscaling groups for the web and app instances, a Redis cache 
+  cluster, a Cognito user pool, and a post sign up Lambda function
+
+  **WARNING** You will be billed for the AWS resources created if you create a stack from this template.
+
+  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  SPDX-License-Identifier: MIT-0
+  
+########################################################################
+
+Parameters:
+  # General
+  EnvironmentName:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+    Default: java-webapp
+  
+  # Imports
+  VPCImportName:
+    Type: String
+    Description: 'The CloudFormation name of the VPC stack to import'
+    Default: 'java-webapp-infra'
+    MinLength: '3'
+    MaxLength: '32'
+
+  RDSImportName:
+    Type: String
+    Description: 'The CloudFormation name of the RDS stack to import'
+    Default: 'java-webapp-rds'
+    MinLength: '3'
+    MaxLength: '32'    
+  
+  VPCImportWebALBSubnet1:
+    Type: String
+    Description: 'The name of the subnet from VPC stack to import for public subnet 1'
+    Default: 'PublicSubnet1'
+  
+  VPCImportWebSubnet1CIDR:
+    Type: String
+    Description: 'The CIDR range from VPC stack to import for public subnet 1'
+    Default: 'PublicSubnet1CIDR'
+  
+  VPCImportWebALBSubnet2:
+    Type: String
+    Description: 'The name of the subnet from VPC stack to import for public subnet 2'
+    Default: 'PublicSubnet2'
+  
+  VPCImportWebSubnet2CIDR:
+    Type: String
+    Description: 'The CIDR range from VPC stack to import for public subnet 1'
+    Default: 'PublicSubnet2CIDR'
+  
+  VPCImportAppALBSubnet1:
+    Type: String
+    Description: 'The name of the subnet from VPC stack to import for app private subnet 1'
+    Default: 'PrivateSubnet1'
+  
+  VPCImportAppSubnet1CIDR:
+    Type: String
+    Description: 'The CIDR range from VPC stack to import for app private subnet 1'
+    Default: 'PrivateSubnet1CIDR'
+  
+  VPCImportAppALBSubnet2:
+    Type: String
+    Description: 'The name of the subnet from VPC stack to import for app private subnet 2'
+    Default: 'PrivateSubnet2'
+  
+  VPCImportAppSubnet2CIDR:
+    Type: String
+    Description: 'The CIDR range from VPC stack to import for app private subnet 2'
+    Default: 'PrivateSubnet2CIDR'
+
+  VPCImportDBSubnet3:
+    Type: String
+    Description: 'The name of the subnet from VPC stack to import for db private subnet 3'
+    Default: 'PrivateSubnet3'
+  
+  VPCImportDBSubnet3CIDR:
+    Type: String
+    Description: 'The CIDR range from VPC stack to import for db private subnet 3'
+    Default: 'PrivateSubnet3CIDR'
+  
+  VPCImportDBSubnet4:
+    Type: String
+    Description: 'The name of the subnet from VPC stack to import for db private subnet 4'
+    Default: 'PrivateSubnet4'
+  
+  VPCImportDBSubnet4CIDR:
+    Type: String
+    Description: 'The CIDR range from VPC stack to import for db private subnet 4'
+    Default: 'PrivateSubnet4CIDR'
+
+  RDSImportMySQLSecurityGroupId:
+    Type: String
+    Description: 'The MySQL Security Group ID'
+    Default: 'MySQLSecurityGroupId'
+
+  WebALBSGSource:
+    Description: The IP address range that can be used to access the web app
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 0.0.0.0/0
+    AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})'
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+
+  BastionSGSource:
+    Description: The IP address range that can be used to access the Bastion Host
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 0.0.0.0/0
+    AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})'
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+
+  BucketName:
+    Type: String
+    Description: 'Bucket name containing the deployment config files & artefacts'
+
+  KeyPairName:
+    Type: String
+    Description: 'Key pair to use for provisioning EC2 instances. This key was created in the pre-requisite step'
+    Default: 'customer-key-pair'
+
+  UserPoolDomain:
+    Type: String
+    Description: 'Unique domain name for Cognito User Pool'
+    Default: 'your-unique-domain'
+
+  CallbackURL:
+    Type: String
+    Description: 'Callback URL to your web application'
+    Default: 'https://<your domain>/<application root>/j_security_check'
+
+  CreateUserLambdaKey:
+    Type: String
+    Description: 'The create user lambda function'
+    Default: 'lib/create-user-lambda-1.0.jar' 
+
+Resources:
+  # Security group for Bastion Host to allow SSH access
+  BastionSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: >-
+        Enable SSH access via port 22 from CidrIp
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: !Ref BastionSGSource
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref EnvironmentName
+              - Bastion Host SG
+      VpcId:
+        Fn::ImportValue: !Sub '${VPCImportName}'    
+
+  # Bastion Host EC2 instance
+  BastionHost:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      ImageId: ami-0210560cedcb09f07
+      InstanceType: t3.small
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          AssociatePublicIpAddress: true
+          DeleteOnTermination: true
+          GroupSet:
+            - !Ref BastionSecurityGroup
+          SubnetId: 
+            Fn::ImportValue: !Sub '${VPCImportName}-PublicSubnet1'
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref EnvironmentName
+              - Bastion Host
+      IamInstanceProfile: !Ref BastionInstanceProfile
+      KeyName: !Ref KeyPairName
+
+  # Security group for the lambda function
+  LambdaSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "Lambda security group"
+      VpcId:
+        Fn::ImportValue: !Sub '${VPCImportName}'
+
+  # IAM Role for sign up lambda function
+  SignupLambdaRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub '${EnvironmentName}-Lambda-Role-${AWS::StackName}'
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess'
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole'
+
+  # Sign up lambda function
+  SignupLambda:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: cognito-signup-lambda
+      Code:
+        S3Bucket: !Ref BucketName
+        S3Key: !Ref CreateUserLambdaKey
+      Handler: 'com.sample.app.lambda.signupHandler::handleRequest'
+      MemorySize: 512
+      Role: !GetAtt SignupLambdaRole.Arn
+      Runtime: java11
+      Timeout: 15
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt LambdaSecurityGroup.GroupId
+        SubnetIds:
+          - Fn::ImportValue: !Sub '${VPCImportName}-${VPCImportDBSubnet3}'
+          - Fn::ImportValue: !Sub '${VPCImportName}-${VPCImportDBSubnet4}'     
+  
+  # Cognito user pool
+  CognitoUserPool:
+    Type: 'AWS::Cognito::UserPool'
+    Properties:
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      LambdaConfig:
+        PostConfirmation: !GetAtt SignupLambda.Arn
+      UserPoolName: java-webapp-pool
+      VerificationMessageTemplate:
+        DefaultEmailOption: CONFIRM_WITH_CODE
+
+  # User Pool Client
+  CognitoUserPoolClient:
+    Type: 'AWS::Cognito::UserPoolClient'
+    Properties:
+      AllowedOAuthFlows:
+        - code
+        - implicit
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes:
+        - openid
+      CallbackURLs:
+        - !Ref CallbackURL
+      ClientName: java-webapp
+      GenerateSecret: true
+      SupportedIdentityProviders:
+        - COGNITO
+      UserPoolId: !Ref CognitoUserPool
+
+  # User Pool Domain
+  CognitoUserPoolDomain:
+    Type: 'AWS::Cognito::UserPoolDomain'
+    Properties:
+      Domain: !Ref UserPoolDomain
+      UserPoolId: !Ref CognitoUserPool
+
+  # Permission for Cognito to execute function
+  SignupLambdaPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: cognito-signup-lambda
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt CognitoUserPool.Arn
+
+  # Security group defining access to the web load balancer
+  WebALBSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: >-
+        Enable HTTP access via port 80 and 443 to the allowed CIDR
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: !Ref WebALBSGSource
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: !Ref WebALBSGSource
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref EnvironmentName
+              - Web Load Balancer SG
+      VpcId:
+        Fn::ImportValue: !Sub '${VPCImportName}'
+  
+  # External web load balancer
+  WebALBLoadBalancer:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      Name: java-web-lb
+      SecurityGroups:
+        - Ref: WebALBSecurityGroup
+      Subnets:
+        - Fn::ImportValue: !Sub '${VPCImportName}-${VPCImportWebALBSubnet1}'
+        - Fn::ImportValue: !Sub '${VPCImportName}-${VPCImportWebALBSubnet2}'
+
+  # Listeners for web load balancer
+  WebALBListener1:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      #  Certificates:
+        #- Certificate
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref WebALBTargetGroup
+      LoadBalancerArn: !Ref WebALBLoadBalancer
+      Port: '80'
+      Protocol: HTTP
+
+  # Application load balancer target group
+  WebALBTargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      Name: java-web-tg
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 15
+      #HealthCheckPort: 
+      #HealthCheckProtocol:
+      HealthCheckTimeoutSeconds: 3
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      # A short drain time helps speed up the lab
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: 10
+      UnhealthyThresholdCount: 3
+      VpcId: 
+        Fn::ImportValue: !Sub '${VPCImportName}'
+
+  # Security group to enable access to the web instances from the web load balancer on port 80 & 443
+  WebSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: >-
+        Enable HTTP access via port 80 and 443 restricted to the web load balancer
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          SourceSecurityGroupId: !Select 
+            - 0
+            - !GetAtt 
+              - WebALBLoadBalancer
+              - SecurityGroups
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          SourceSecurityGroupId: !Select 
+            - 0
+            - !GetAtt 
+              - WebALBLoadBalancer
+              - SecurityGroups
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref EnvironmentName
+              - Web Instance SG
+      VpcId:
+        Fn::ImportValue: !Sub '${VPCImportName}'
+  
+  # Launch template defining the web server instance configuration & installation
+  WebLaunchTemplate:
+    Type: 'AWS::EC2::LaunchTemplate'
+    Properties:
+      LaunchTemplateName: java-web-lt
+      LaunchTemplateData:
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: true
+            DeleteOnTermination: true
+            Groups:
+              - !Ref WebSecurityGroup
+        ImageId: ami-0210560cedcb09f07
+        InstanceType: t3.medium
+        IamInstanceProfile: 
+          Name: !Ref WebInstanceInstanceProfile
+        KeyName: !Ref KeyPairName
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            yum update -y
+            yum install -y amazon-cloudwatch-agent
+            yum install -y httpd
+            aws s3api get-object --bucket ${BucketName} --key config/httpd.conf /etc/httpd/conf/httpd.conf
+            systemctl start httpd.service
+            systemctl enable httpd.service
+            usermod -a -G apache ec2-user
+            chown -R ec2-user:apache /var/www
+            chmod 2775 /var/www
+            find /var/www -type d -exec chmod 2775 {} \;
+            find /var/www -type f -exec chmod 0664 {} \;
+            echo “Hello World from $(hostname -f)” > /var/www/html/index.html
+  
+  # Autoscaling group for the web instances (initially set to 0). Only adjust after configuration files have been updated
+  WebAutoScalingGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties:
+      VPCZoneIdentifier:
+        - Fn::ImportValue: !Sub '${VPCImportName}-PublicSubnet1'
+        - Fn::ImportValue: !Sub '${VPCImportName}-PublicSubnet2'
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WebLaunchTemplate
+        Version: !GetAtt WebLaunchTemplate.LatestVersionNumber
+      MinSize: '0'
+      MaxSize: '0'
+      DesiredCapacity: '0'
+      TargetGroupARNs:
+        - !Ref WebALBTargetGroup
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref EnvironmentName
+              - Web Instance
+          PropagateAtLaunch: true
+    UpdatePolicy:
+      AutoScalingReplacingUpdate:
+        WillReplace: 'true'
+  
+  # Web instance managed policy
+  WebInstancePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: 'Policy used by EC2 Web Servers'
+      ManagedPolicyName: !Sub '${EnvironmentName}-EC2-Web-Policy-${AWS::StackName}'
+      Path: /
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'ec2:DescribeInstanceStatus'
+            Resource: '*'
+          - Effect: Allow
+            Action: 
+              - 'logs:CreateLogGroup'
+              - 'logs:CreateLogStream'
+              - 'logs:PutLogEvents'
+              - 'logs:DescribeLogStreams'
+            Resource: 'arn:aws:logs:*:*:*'
+          - Effect: Allow
+            Action:
+              - 'cloudwatch:PutMetricData'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 'S3:GetObject'
+            Resource: '*'
+          - Effect: Allow
+            Action: 
+              - 'ssm:GetParameter'
+            Resource: '*'
+
+  # IAM Role for EC2 web instance
+  WebInstanceRole:
+    Type: 'AWS::IAM::Role'
+    DependsOn: WebInstancePolicy
+    Properties:
+      RoleName: !Sub '${EnvironmentName}-EC2-Web-Role-${AWS::StackName}'
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - !Ref WebInstancePolicy
+        - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+
+  # Instance profile for the web instance
+  WebInstanceInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      InstanceProfileName: !Sub '${EnvironmentName}-EC2-Web-Role-${AWS::StackName}'
+      Path: /WebInstanceEc2Role/
+      Roles:
+        - !Ref WebInstanceRole
+
+  # Bastion host managed policy
+  BastionHostPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: 'Policy used by Bastion Host'
+      ManagedPolicyName: !Sub '${EnvironmentName}-EC2-Bastion-Policy-${AWS::StackName}'
+      Path: /
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'ec2:DescribeInstanceStatus'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 'cloudwatch:PutMetricData'
+            Resource: '*'
+
+  # IAM Role for EC2 Bastion Host
+  BastionHostRole:
+    Type: 'AWS::IAM::Role'
+    DependsOn: BastionHostPolicy
+    Properties:
+      RoleName: !Sub '${EnvironmentName}-EC2-Bastion-Role-${AWS::StackName}'
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - !Ref BastionHostPolicy
+        - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+
+  # Instance profile for the bastion host
+  BastionInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      InstanceProfileName: !Sub '${EnvironmentName}-EC2-Bastion-Role-${AWS::StackName}'
+      Path: /BastionHostEc2Role/
+      Roles:
+        - !Ref BastionHostRole
+
+  # Security group defining access to the app load balancer
+  AppALBSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: >-
+        Enable TCP access via port 8080 from PublicSubnet1 and PublicSubnet2
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '8080'
+          ToPort: '8080'
+          CidrIp: 
+            Fn::ImportValue: !Sub '${VPCImportName}-${VPCImportWebSubnet1CIDR}'
+        - IpProtocol: tcp
+          FromPort: '8080'
+          ToPort: '8080'
+          CidrIp:
+            Fn::ImportValue: !Sub '${VPCImportName}-${VPCImportWebSubnet2CIDR}'
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref EnvironmentName
+              - App Load Balancer SG
+      VpcId:
+        Fn::ImportValue: !Sub '${VPCImportName}'
+
+  # Internal app load balancer
+  AppALBLoadBalancer:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      Name: java-app-lb
+      Scheme: internal
+      SecurityGroups:
+        - Ref: AppALBSecurityGroup
+      Subnets:
+        - Fn::ImportValue: !Sub '${VPCImportName}-${VPCImportAppALBSubnet1}'
+        - Fn::ImportValue: !Sub '${VPCImportName}-${VPCImportAppALBSubnet2}'
+
+  # Listeners for app load balancer
+  AppALBListener1:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      #  Certificates:
+        #- Certificate
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref AppALBTargetGroup
+      LoadBalancerArn: !Ref AppALBLoadBalancer
+      Port: '8080'
+      Protocol: HTTP
+
+  # Target group for the app load balancer
+  AppALBTargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      Name: java-app-tg
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 15
+      #HealthCheckPort: 
+      #HealthCheckProtocol:
+      HealthCheckTimeoutSeconds: 3
+      HealthyThresholdCount: 2
+      Port: 8080
+      Protocol: HTTP
+      # A short drain time helps speed up the lab
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: 10
+      UnhealthyThresholdCount: 3
+      VpcId: 
+        Fn::ImportValue: !Sub '${VPCImportName}'
+
+  # Security group to enable access to the app instances from the app load balancers & bastion host
+  AppSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: >-
+        Enable web load balancer HTTP access via port 8080 & bastion host via port 22
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '8080'
+          ToPort: '8080'
+          SourceSecurityGroupId: !Select 
+            - 0
+            - !GetAtt 
+              - AppALBLoadBalancer
+              - SecurityGroups
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          SourceSecurityGroupId: !Ref BastionSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref EnvironmentName
+              - App Instance SG
+      VpcId:
+        Fn::ImportValue: !Sub '${VPCImportName}'
+  
+  # Launch template for the tomcat app servers & supporting config files
+  AppLaunchTemplate:
+    Type: 'AWS::EC2::LaunchTemplate'
+    Properties:
+      LaunchTemplateName: java-app-lt
+      LaunchTemplateData:
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: true
+            DeleteOnTermination: true
+            Groups:
+              - !Ref AppSecurityGroup
+        ImageId: ami-0210560cedcb09f07
+        IamInstanceProfile: 
+          Name: !Ref AppInstanceInstanceProfile
+        InstanceType: t3.medium
+        KeyName: !Ref KeyPairName
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            sudo yum update -y
+            sudo yum install -y amazon-cloudwatch-agent
+            sudo amazon-linux-extras install java-openjdk11
+            sudo aws s3api get-object --bucket ${BucketName} --key config/tomcat.service /etc/systemd/system/tomcat.service
+            useradd -d /usr/share/tomcat -s /bin/nologin tomcat
+            sudo aws s3api get-object --bucket ${BucketName} --key lib/apache-tomcat-9.0.41.tar.gz /tmp/apache-tomcat-9.0.41.tar.gz
+            tar -zxvf /tmp/apache-tomcat-*.tar.gz
+            mv apache-tomcat-9.0.41/* /usr/share/tomcat
+            chown -R tomcat:tomcat /usr/share/tomcat/
+            sudo systemctl daemon-reload
+            sudo systemctl start tomcat
+            sudo systemctl enable tomcat
+            sudo yum install -y mysql
+            sudo yum install -y ruby
+            cd /home/ec2-user
+            sudo aws s3api get-object --bucket ${BucketName} --key lib/redisson-all-3.14.1.jar /usr/share/tomcat/lib/redisson-all-3.14.1.jar
+            sudo aws s3api get-object --bucket ${BucketName} --key lib/redisson-tomcat-9-3.14.1.jar /usr/share/tomcat/lib/redisson-tomcat-9-3.14.1.jar
+            sudo aws s3api get-object --bucket ${BucketName} --key lib/tomcat-oidcauth-2.3.0-tomcat90.jar /usr/share/tomcat/lib/tomcat-oidcauth-2.3.0-tomcat90.jar
+            sudo aws s3api get-object --bucket ${BucketName} --key config/server.xml /usr/share/tomcat/conf/server.xml
+            sudo aws s3api get-object --bucket ${BucketName} --key config/context.xml /usr/share/tomcat/conf/context.xml
+            sudo aws s3api get-object --bucket ${BucketName} --key config/redisson.yaml /usr/share/tomcat/conf/redisson.yaml
+            sudo chown tomcat:tomcat /usr/share/tomcat/lib/redisson-all-3.14.1.jar 
+            sudo chown tomcat:tomcat /usr/share/tomcat/lib/redisson-tomcat-9-3.14.1.jar 
+            sudo chown tomcat:tomcat /usr/share/tomcat/lib/tomcat-oidcauth-2.3.0-tomcat90.jar
+            sudo systemctl restart tomcat
+            sudo aws s3api get-object --bucket ${BucketName} --key config/uninstall-sample-webapp.sh /tmp/uninstall-sample-webapp.sh
+            sudo chmod +x /tmp/uninstall-sample-webapp.sh
+            sudo aws s3api get-object --bucket ${BucketName} --key lib/sample-webapp.war /tmp/sample-webapp.war
+            cd /tmp 
+            sudo cp /tmp/sample-webapp.war /usr/share/tomcat/webapps/sample-webapp.war
+            sudo rm -rf sample-webapp*
+
+  # Autoscaling group for the app servers (initially set to 0). Only adjust after configuration files have been updated
+  AppAutoScalingGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties:
+      VPCZoneIdentifier:
+        - Fn::ImportValue: !Sub '${VPCImportName}-PrivateSubnet1'
+        - Fn::ImportValue: !Sub '${VPCImportName}-PrivateSubnet2'
+      LaunchTemplate:
+        LaunchTemplateId: !Ref AppLaunchTemplate
+        Version: !GetAtt AppLaunchTemplate.LatestVersionNumber
+      MinSize: '0'
+      MaxSize: '0'
+      DesiredCapacity: '0'
+      TargetGroupARNs:
+        - !Ref AppALBTargetGroup
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref EnvironmentName
+              - App Instance
+          PropagateAtLaunch: true
+    UpdatePolicy:
+      AutoScalingReplacingUpdate:
+        WillReplace: 'true'
+  
+  # Application instances managed policy
+  AppInstancePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: 'Policy used by EC2 App Servers'
+      ManagedPolicyName: !Sub '${EnvironmentName}-EC2-App-Policy-${AWS::StackName}'
+      Path: /
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'ec2:DescribeInstanceStatus'
+            Resource: '*'
+          - Effect: Allow
+            Action: 
+              - 'logs:CreateLogGroup'
+              - 'logs:CreateLogStream'
+              - 'logs:PutLogEvents'
+              - 'logs:DescribeLogStreams'
+            Resource: 'arn:aws:logs:*:*:*'
+          - Effect: Allow
+            Action:
+              - 'cloudwatch:PutMetricData'
+            Resource: '*'
+            # SSM: Our web app code on EC2 reads an SSM Parameter as part of this lab
+          - Effect: Allow
+            Action:
+              - 'S3:GetObject'
+            Resource: '*'
+          - Effect: Allow
+            Action: 
+              - 'ssm:GetParameter'
+            Resource: '*'
+
+  # IAM Role for EC2 application instances
+  AppInstanceRole:
+    Type: 'AWS::IAM::Role'
+    DependsOn: AppInstancePolicy
+    Properties:
+      RoleName: !Sub '${EnvironmentName}-EC2-App-Role-${AWS::StackName}'
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - !Ref AppInstancePolicy
+        - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+
+  # Instance profile for the application instances
+  AppInstanceInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      InstanceProfileName: !Sub '${EnvironmentName}-EC2-App-Role-${AWS::StackName}'
+      Path: /AppInstanceEc2Role/
+      Roles:
+        - !Ref AppInstanceRole
+
+  # Redis cache security group
+  RedisCacheSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Redis Cache Security Group
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !Ref WebSecurityGroup
+      VpcId:
+        Fn::ImportValue: !Sub '${VPCImportName}'
+
+  # Redis cache subnet group
+  RedisSubnetGroup:
+    Type: 'AWS::ElastiCache::SubnetGroup'
+    Properties:
+      Description: Cache Subnet Group
+      SubnetIds:
+          - Fn::ImportValue: !Sub '${VPCImportName}-${VPCImportAppALBSubnet1}'
+          - Fn::ImportValue: !Sub '${VPCImportName}-${VPCImportAppALBSubnet2}'     
+
+  # Redis cache cluster
+  RedisCacheCluster:
+    Type: 'AWS::ElastiCache::CacheCluster'
+    DependsOn: RedisSubnetGroup
+    Properties:
+      ClusterName: !Sub '${EnvironmentName}-Redis-Cluster'
+      Engine: redis
+      CacheNodeType: cache.t3.medium
+      NumCacheNodes: '1'
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref RedisCacheSecurityGroup
+
+  # Add an ingress rule to MySQL security group allowing access on port 3306 to app instances
+  MySQLSecurityIngressApp:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    Properties:
+      GroupId: 
+        Fn::ImportValue: !Sub '${RDSImportName}-MySQLSecurityGroupId'
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+      SourceSecurityGroupId: !Ref AppSecurityGroup
+  
+  # Add an ingress rule to MySQL security group allowing access on port 3306 to lambda function
+  MySQLSecurityIngressLambda:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    Properties:
+      GroupId: 
+        Fn::ImportValue: !Sub '${RDSImportName}-MySQLSecurityGroupId'
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+      SourceSecurityGroupId: !Ref LambdaSecurityGroup
+
+# Export stack output parameters 
+Outputs:
+  WebALBLoadBalancerDNS:
+    Description: A reference to the web server load balancer
+    Value: !GetAtt WebALBLoadBalancer.DNSName
+    Export:
+      Name: !Sub '${AWS::StackName}-WebALBLoadBalancerDNS'
+
+  AppALBLoadBalancerDNS:
+    Description: A reference to the web application load balancer
+    Value: !GetAtt AppALBLoadBalancer.DNSName
+    Export:
+      Name: !Sub '${AWS::StackName}-AppALBLoadBalancerDNS'
+
+  RedisClusterEndpoint:
+    Description: A reference to the Redis cache cluster endpoint
+    Value: !GetAtt RedisCacheCluster.RedisEndpoint.Address
+    Export:
+      Name: !Sub '${AWS::StackName}-RedisClusterEndpoint'
+  
+  RedisClusterPort:
+    Description: A reference to the Redis cache cluster port
+    Value: !GetAtt RedisCacheCluster.RedisEndpoint.Port
+    Export:
+      Name: !Sub '${AWS::StackName}-RedisClusterPort'

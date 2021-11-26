@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<web-app version="2.5" 
+xmlns="http://java.sun.com/xml/ns/javaee"
+xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+xsi:schemaLocation="http://java.sun.com/xml/ns/javaee http://java.sun.com/xml/ns/javaee/web-app_2_5.xsd">
+    <display-name>Sample Contact Management Web Application</display-name>
+    <servlet>
+    	<servlet-name>UserServlet</servlet-name>
+    	<servlet-class>com.sample.app.usermanagement.web</servlet-class>
+    </servlet>
+    <servlet-mapping>
+    	<servlet-name>UserServlet</servlet-name>
+    	<url-pattern>/contacts</url-pattern>
+    </servlet-mapping>
+    <security-constraint>
+		<web-resource-collection>
+			<web-resource-name>Contact Management Authentication</web-resource-name>
+			<url-pattern>/*</url-pattern>
+			<http-method>GET</http-method>
+			<http-method>POST</http-method>
+		</web-resource-collection>
+		<auth-constraint>
+			<role-name>standard</role-name>
+		</auth-constraint>
+		<user-data-constraint>
+			<!-- transport-guarantee can be CONFIDENTIAL, INTEGRAL, or NONE -->
+			<transport-guarantee>NONE</transport-guarantee>
+		</user-data-constraint>
+	</security-constraint>
+	<login-config>
+		<auth-method>FORM</auth-method>
+		<form-login-config>
+			<form-login-page>/login.jsp</form-login-page>
+			<form-error-page>/login-error.jsp</form-error-page>
+		</form-login-config>
+	</login-config>
+	<resource-ref>
+      <res-ref-name>jdbc/webappdb</res-ref-name>
+      <res-type>javax.sql.DataSource</res-type>
+      <res-auth>Container</res-auth>
+  </resource-ref>
+    <error-page>
+	    <exception-type>java.lang.Exception</exception-type>
+	    <location>/Error.jsp</location>
+    </error-page>
+</web-app>

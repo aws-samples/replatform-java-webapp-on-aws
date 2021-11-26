@@ -1,0 +1,411 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  This template deploys the infrastructure components for the re-platformed Java solution.
+  The deployed resources include a VPC, two public subnets, two app private subnets, two DB
+  private subnets, an internet gateway, two NAT gateways, public and private route tables. 
+  It also deploys an S3 bucket to store resource and configuration files.
+
+  **WARNING** You will be billed for the AWS resources created if you create a stack from this template.
+
+  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  SPDX-License-Identifier: MIT-0
+  
+########################################################################
+
+Parameters:
+  # General
+  EnvironmentName:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+    Default: JavaWebApp
+
+  BucketName:
+    Description: Enter a unique bucket name to store your resources
+    Type: String
+    Default: java-webapp-bucket
+
+  VpcCIDR:
+    Description: Please enter the IP range (CIDR notation) for this VPC
+    Type: String
+    Default: 10.0.0.0/16
+
+  PublicSubnet1CIDR:
+    Description: Please enter the IP range (CIDR notation) for the public subnet in the first Availability Zone
+    Type: String
+    Default: 10.0.0.0/24
+
+  PublicSubnet2CIDR:
+    Description: Please enter the IP range (CIDR notation) for the public subnet in the second Availability Zone
+    Type: String
+    Default: 10.0.1.0/24
+
+  PrivateSubnet1CIDR:
+    Description: Please enter the IP range (CIDR notation) for the web app private subnet in the first Availability Zone
+    Type: String
+    Default: 10.0.2.0/23
+
+  PrivateSubnet2CIDR:
+    Description: Please enter the IP range (CIDR notation) for the web app private subnet in the second Availability Zone
+    Type: String
+    Default: 10.0.4.0/23
+
+  PrivateSubnet3CIDR:
+    Description: Please enter the IP range (CIDR notation) for the database private subnet in the first Availability Zone
+    Type: String
+    Default: 10.0.6.0/23
+
+  PrivateSubnet4CIDR:
+    Description: Please enter the IP range (CIDR notation) for the database private subnet in the second Availability Zone
+    Type: String
+    Default: 10.0.8.0/23
+
+Resources:
+  # Virtual Private Cloud for the solution
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Ref EnvironmentName
+  
+  # Internet Gateway to allow communication between the VPC and internet
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Ref EnvironmentName
+  
+  # Attaches the internet gateway to the VPC
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+  
+  # Public subnet in the first availability zone
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: !Ref PublicSubnet1CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Public Subnet (AZ1)
+
+  # Public subnet in the second availability zone
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 1, !GetAZs  '' ]
+      CidrBlock: !Ref PublicSubnet2CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Public Subnet (AZ2)
+
+  # Private web application subnet in the first availability zone
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs  '' ]
+      CidrBlock: !Ref PrivateSubnet1CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} WebApp Private Subnet (AZ1)
+
+  # Private web application subnet in the second availability zone
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 1, !GetAZs  '' ]
+      CidrBlock: !Ref PrivateSubnet2CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} WebApp Private Subnet (AZ2)
+
+  # Private database subnet in the first availability zone
+  PrivateSubnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs  '' ]
+      CidrBlock: !Ref PrivateSubnet3CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} DB Private Subnet (AZ1)
+
+  # Private database subnet in the second availability zone
+  PrivateSubnet4:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 1, !GetAZs  '' ]
+      CidrBlock: !Ref PrivateSubnet4CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} DB Private Subnet (AZ2)
+
+  # Elastic IP for the first NAT Gateway
+  NatGateway1EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  # Elastic IP for the second NAT Gateway
+  NatGateway2EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  # NAT Gateway in the first availability zone
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway1EIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+
+  # NAT Gateway in the second availability zone
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway2EIP.AllocationId
+      SubnetId: !Ref PublicSubnet2
+
+  # Public route table
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Public Routes
+
+  # Default route for internet traffic to the internet gateway
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  # Associate public subnet in the first AZ to the public route table
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+
+  # Associate public subnet in the second AZ to the public route table
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+
+  # Private route table in the first AZ
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} WebApp Private Routes (AZ1)
+
+  # Default route for internet traffic from the app private subnet through the NAT gateway in the first AZ
+  DefaultPrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+
+  # Associate app private subnet in the first AZ to the public route table
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      SubnetId: !Ref PrivateSubnet1
+
+  # App private route table in the second AZ
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} WebApp Private Routes (AZ2)
+
+  # Default route for internet traffic from the app private subnet through the NAT gateway in the second AZ
+  DefaultPrivateRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway2
+
+  # Associate app private subnet in the second AZ to the public route table
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      SubnetId: !Ref PrivateSubnet2
+
+  # DB private route table in the first AZ
+  PrivateRouteTable3:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} DB Private Routes (AZ1)
+
+  # Associate DB private subnet in the first AZ to the private route table
+  PrivateSubnet3RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable3
+      SubnetId: !Ref PrivateSubnet3
+
+  # DB private route table in the second AZ
+  PrivateRouteTable4:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} DB Private Routes (AZ2)
+
+  # Associate DB private subnet in the second AZ to the private route table
+  PrivateSubnet4RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable4
+      SubnetId: !Ref PrivateSubnet4
+
+  # Security group with no inbound traffic
+  NoIngressSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: "no-ingress-sg"
+      GroupDescription: "Security group with no ingress rule"
+      VpcId: !Ref VPC
+
+  # S3 bucket to store the resource & config files
+  S3Bucket:
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Ref BucketName
+
+Outputs:
+  VPC:
+    Description: A reference to the created VPC
+    Value: !Ref VPC
+    Export:
+      Name: !Sub '${AWS::StackName}'
+
+  PublicSubnets:
+    Description: A list of the public subnets
+    Value: !Join [ ",", [ !Ref PublicSubnet1, !Ref PublicSubnet2 ]]
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicSubnets'
+
+  PrivateSubnets:
+    Description: A list of the private subnets
+    Value: !Join [ ",", [ !Ref PrivateSubnet1, !Ref PrivateSubnet2, !Ref PrivateSubnet3, !Ref PrivateSubnet4 ]]
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateSubnets'
+
+  PublicSubnet1:
+    Description: A reference to the public subnet in the 1st Availability Zone
+    Value: !Ref PublicSubnet1
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicSubnet1'
+
+  PublicSubnet1CIDR:
+    Description: A reference to the public subnet CIDR range in the 1st Availability Zone
+    Value: !Ref PublicSubnet1CIDR
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicSubnet1CIDR'
+
+  PublicSubnet2:
+    Description: A reference to the public subnet in the 2nd Availability Zone
+    Value: !Ref PublicSubnet2
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicSubnet2'
+
+  PublicSubnet2CIDR:
+    Description: A reference to the public subnet CIDR range in the 2nd Availability Zone
+    Value: !Ref PublicSubnet2CIDR
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicSubnet2CIDR'
+
+  PrivateSubnet1:
+    Description: A reference to the private subnet in the 1st Availability Zone
+    Value: !Ref PrivateSubnet1
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateSubnet1'
+
+  PrivateSubnet1CIDR:
+    Description: A reference to the private subnet CIDR range in the 1st Availability Zone
+    Value: !Ref PrivateSubnet1CIDR
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateSubnet1CIDR'
+
+  PrivateSubnet2:
+    Description: A reference to the private subnet in the 2nd Availability Zone
+    Value: !Ref PrivateSubnet2
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateSubnet2'
+
+  PrivateSubnet2CIDR:
+    Description: A reference to the private subnet CIDR range in the 2nd Availability Zone
+    Value: !Ref PrivateSubnet2CIDR
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateSubnet2CIDR'
+
+  PrivateSubnet3:
+    Description: A reference to the DB private subnet in the 1st Availability Zone
+    Value: !Ref PrivateSubnet3
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateSubnet3'
+
+  PrivateSubnet3CIDR:
+    Description: A reference to the DB private subnet CIDR range in the 1st Availability Zone
+    Value: !Ref PrivateSubnet3CIDR
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateSubnet3CIDR'
+
+  PrivateSubnet4:
+    Description: A reference to the private subnet in the 2nd Availability Zone
+    Value: !Ref PrivateSubnet4
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateSubnet4'
+
+  PrivateSubnet4CIDR:
+    Description: A reference to the DB private subnet CIDR range in the 2nd Availability Zone
+    Value: !Ref PrivateSubnet4CIDR
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateSubnet4CIDR'
+
+  NoIngressSecurityGroup:
+    Description: Security group with no ingress rule
+    Value: !Ref NoIngressSecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-NoIngressSecurityGroup'
